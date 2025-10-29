@@ -17,8 +17,11 @@ from watchdog.events import FileSystemEventHandler
 MODELS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "models")
 model_files = glob.glob(os.path.join(MODELS_DIR, "*.gguf"))
 
-if not model_files:
-    model_files = [None]  # Handle the case with no models
+# Extract only the model names (without file path and extension)
+model_names = [os.path.splitext(os.path.basename(model))[0] for model in model_files]
+
+if not model_names:
+    model_names = [None]  # Handle the case with no models
 
 llm = None  # Global model instance
 
@@ -63,16 +66,15 @@ def get_model_ctx(model_name_or_path):
         if hasattr(config, 'max_position_embeddings'):
             return config.max_position_embeddings
         else:
-            return 16384
+            return 16384  # Default to 16k if no context size found
     except Exception as e:
         print(f"Error fetching context for {model_name_or_path}: {e}")
-        return 4096
+        return 4096  # Return 4096 as fallback context size
 
-def load_model(model_path):
+def load_model(model_path, model_ctx, use_fp16, use_mmap):
     """Loads the selected model with GPU acceleration if available."""
     global llm
     backend = detect_gpu_backend()
-    model_ctx = get_model_ctx(model_path)
 
     try:
         debug_info = f"🔍 Detected backend: {backend.upper()}\n"
@@ -85,9 +87,9 @@ def load_model(model_path):
                 n_gpu_layers=-1,
                 seed=42,
                 verbose=False,
-                use_mmap=True,
+                use_mmap=use_mmap,
                 use_mlock=True,
-                fp16=True  # Mixed precision for RTX 3070
+                fp16=use_fp16  # Enable/disable mixed precision based on user input
             )
             debug_info += "✅ Model loaded on GPU.\n"
         else:
@@ -281,16 +283,29 @@ watcher_thread = threading.Thread(target=watch_file, args=(__file__,), daemon=Tr
 watcher_thread.start()
 
 # =========================================================
-# LAUNCH GRADIO INTERFACE
+# LAUNCH GRADIO INTERFACE WITH USER CONTROL OPTIONS
 # =========================================================
 with gr.Blocks(css=css) as iface:
     gr.Markdown("## 🦙 Local LLaMA Chat (Dark Theme)")
 
     model_selector = gr.Dropdown(
-        choices=model_files,
+        choices=model_names,
         label="Select Model File",
-        value=model_files[0] if model_files else None,
+        value=model_names[0] if model_names else None,
         interactive=True
+    )
+
+    ctx_slider = gr.Slider(
+        minimum=2048, maximum=16384, step=1024,
+        label="Select Context Size (Tokens)", value=4096, interactive=True
+    )
+    
+    fp16_checkbox = gr.Checkbox(
+        label="Use Mixed Precision (FP16)", value=True, interactive=True
+    )
+
+    mmap_checkbox = gr.Checkbox(
+        label="Use Memory Map (mmap)", value=True, interactive=True
     )
 
     load_button = gr.Button("Load Model")
@@ -306,7 +321,7 @@ with gr.Blocks(css=css) as iface:
     send_button = gr.Button("Send")
 
     # Function to load model on button click
-    load_button.click(fn=load_model, inputs=model_selector, outputs=debug_box)
+    load_button.click(fn=load_model, inputs=[model_selector, ctx_slider, fp16_checkbox, mmap_checkbox], outputs=debug_box)
 
     # Create interaction: user submits input, model generates a response
     input_box.submit(fn=generate_text, inputs=[input_box, chat_history], outputs=[input_box, chat_history])
